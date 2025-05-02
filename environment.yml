@@ -46,5 +46,4 @@ dependencies:
   - zlib=1.2.13
   - pip:
       - matlabengine==24.2
-
 prefix: D:\Soft\anaconda3\conda_envs\Map_Projection
