@@ -1,133 +1,216 @@
 <template>
   <div id="app">
     <div ref="globeViz" id="globeViz"></div>
-    <!-- 选择信息：显示当前选中国家的 GeoJSON 数据 -->
-    <div id="selectionInfo">{{ selectedGeoJson }}</div>
-    <!-- 自定义 tooltip：鼠标悬停时显示当前国家名称 -->
     <div id="hoverTooltip" v-if="hoveredName">{{ hoveredName }}</div>
-    <canvas ref="projectionCanvas" id="projectionCanvas"></canvas>
+
+    <el-dialog v-model="showProjectionSelect" title="选择地图投影方式" width="400px" center>
+      <el-select v-model="selectedProjection" placeholder="请选择投影方式" style="width: 100%">
+        <el-option-group label="方位投影（Azimuthal Projections）">
+          <el-option label="等角方位投影 (Azimuthal Conformal)" value="azimuthal_conformal" />
+          <el-option label="等面积方位投影 (Azimuthal Equal-Area)" value="azimuthal_equal_area" />
+          <el-option label="等距离方位投影 (Azimuthal Equidistant)" value="azimuthal_equidistant" />
+          <el-option label="透视方位投影 (Perspective Azimuthal)" value="azimuthal_perspective" />
+        </el-option-group>
+
+        <el-option-group label="圆锥投影（Conic Projections）">
+          <el-option label="等角圆锥投影 (Conic Conformal)" value="conic_conformal" />
+          <el-option label="等面积圆锥投影 (Conic Equal-Area)" value="conic_equal_area" />
+          <el-option label="等距离圆锥投影 (Conic Equidistant)" value="conic_equidistant" />
+          <el-option label="斜轴/横轴圆锥投影 (Oblique/Transverse Conic)" value="conic_oblique" />
+        </el-option-group>
+
+        <el-option-group label="圆柱投影（Cylindrical Projections）">
+          <el-option label="等角圆柱投影 (Cylindrical Conformal)" value="cylindrical_conformal" />
+          <el-option label="等面积圆柱投影 (Cylindrical Equal-Area)" value="cylindrical_equal_area" />
+          <el-option label="等距离圆柱投影 (Cylindrical Equidistant)" value="cylindrical_equidistant" />
+          <el-option label="斜轴/横轴圆柱投影 (Oblique/Transverse Cylindrical)" value="cylindrical_oblique" />
+          <el-option label="透视圆柱投影 (Perspective Cylindrical)" value="cylindrical_perspective" />
+        </el-option-group>
+
+        <el-option-group label="其他投影类型">
+          <el-option label="高斯-克吕格投影 (Gauss-Krüger)" value="gauss_kruger" />
+          <el-option label="伪方位投影 (Pseudo-Azimuthal)" value="pseudo_azimuthal" />
+          <el-option label="伪圆柱投影 (Pseudo-Cylindrical)" value="pseudo_cylindrical" />
+          <el-option label="伪圆锥投影 (Pseudo-Conic)" value="pseudo_conic" />
+        </el-option-group>
+      </el-select>
+      <template #footer>
+        <el-button @click="showProjectionSelect = false">取消</el-button>
+        <el-button type="primary" @click="confirmProjection">下一步</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="showConfirm" title="确认加载" width="350px" center>
+      <span>是否加载变形图并进行面积对比？</span>
+      <template #footer>
+        <el-button @click="showConfirm = false">取消</el-button>
+        <el-button type="primary" @click="loadProjection">确定</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="showDialog"
+      title="地图投影效果对比"
+      width="700px"
+      @opened="drawAfterDialogOpen"
+    >
+      <canvas ref="projectionCanvas" width="600" height="400" style="border-radius: 6px"></canvas>
+      <div style="text-align: right; margin-top: 10px">
+        <p>
+          原始面积：<strong>{{ areaOriginal }} km²</strong> | 投影后面积：<strong>{{ areaProjected }} km²</strong> |
+          面积变化：<strong>{{ areaScale }} 倍</strong>
+        </p>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import Globe from 'globe.gl'
 
 const globeViz = ref(null)
 const projectionCanvas = ref(null)
-const selectedGeoJson = ref('')
 const hoveredName = ref('')
+const showProjectionSelect = ref(false)
+const showConfirm = ref(false)
+const showDialog = ref(false)
 
-let selectedPolygons = []
-let hoveredPolygon = null
-let worldGlobe = null
+const selectedProjection = ref('')
+const selectedCountry = ref('')
+const selectedGeoJson = ref(null)
+const lastProjection = ref(null)
+
+const areaOriginal = ref('?')
+const areaProjected = ref('?')
+const areaScale = ref('?')
+
 let countries = []
-
-const blacklistedCountries = [
-  'Bermuda', 'Malta', 'Vatican', 'San Marino', 'Liechtenstein', 'Monaco', 'Andorra',
-  'Tuvalu', 'Nauru', 'Palau', 'Marshall Islands', 'Micronesia', 'Saint Kitts and Nevis',
-  'Grenada', 'Seychelles', 'Maldives', 'Barbados', 'Antigua and Barbuda'
-]
+let hoveredPolygon = null
+let selectedPolygons = []
 
 onMounted(async () => {
   const res = await fetch('https://raw.githubusercontent.com/johan/world.geo.json/master/countries.geo.json')
   const geojson = await res.json()
-
-  geojson.features = geojson.features.filter(
-    f => !blacklistedCountries.includes(f.properties.name)
-  )
-
+  geojson.features = geojson.features.filter(f => !['Bermuda', 'Malta', 'Vatican', 'San Marino'].includes(f.properties.name))
   geojson.features.forEach(f => {
-    if (f.properties.name === 'Taiwan') {
-      f.properties.name = 'China'
-    }
+    if (f.properties.name === 'Taiwan') f.properties.name = 'China'
   })
-
   countries = geojson.features
 
-  worldGlobe = Globe()
+  const globe = Globe()
     .globeImageUrl('//unpkg.com/three-globe/example/img/earth-dark.jpg')
     .polygonsData(countries)
     .polygonAltitude(0.005)
-    .polygonCapColor(feat =>
-      selectedPolygons.includes(feat)
-        ? 'rgba(184, 134, 11, 0.8)'
-        : feat === hoveredPolygon
-          ? 'rgba(255, 255, 255, 0.4)'
-          : 'rgba(70, 130, 180, 0.5)'
-    )
-    .polygonSideColor(() => 'rgba(255, 255, 255, 0.1)')
-    .polygonStrokeColor(feat =>
-      feat.properties.name === 'China' ? '#b8860b' : '#ddd'
-    )
-    .polygonLabel(() => '')
-    .onPolygonClick(handlePolygonClick)
-    .onPolygonHover(feat => {
-      hoveredPolygon = feat
-      hoveredName.value = feat && feat.properties && feat.properties.name ? feat.properties.name : ''
-      worldGlobe.polygonCapColor(feat =>
-        selectedPolygons.includes(feat)
-          ? 'rgba(184, 134, 11, 0.8)'
-          : feat === hoveredPolygon
-            ? 'rgba(255, 255, 255, 0.4)'
-            : 'rgba(70, 130, 180, 0.5)'
-      )
+    .polygonCapColor((f) => selectedPolygons.includes(f)
+      ? 'rgba(184,134,11,0.8)'
+      : f === hoveredPolygon ? 'rgba(255,255,255,0.4)' : 'rgba(70,130,180,0.5)')
+    .polygonLabel(f => f.properties.name)
+    .onPolygonHover(f => {
+      hoveredPolygon = f
+      hoveredName.value = f ? f.properties.name : ''
+      globe.polygonCapColor(f => selectedPolygons.includes(f)
+        ? 'rgba(184,134,11,0.8)'
+        : f === hoveredPolygon ? 'rgba(255,255,255,0.4)' : 'rgba(70,130,180,0.5)')
     })
+    .onPolygonClick(handleClick)
 
-  worldGlobe(globeViz.value)
+  globe(globeViz.value)
 })
 
-function handlePolygonClick(clickedPolygon) {
-  if (!clickedPolygon || !clickedPolygon.geometry) return
+function handleClick(polygon) {
+  if (!polygon || !polygon.geometry) return
+  selectedCountry.value = polygon.properties.name
+  selectedPolygons = countries.filter(f => f.properties.name === selectedCountry.value)
+  selectedGeoJson.value = { type: 'FeatureCollection', features: selectedPolygons }
+  showProjectionSelect.value = true
+}
 
-  const countryName = clickedPolygon.properties.name
-  selectedPolygons = countries.filter(f => f.properties.name === countryName)
+function confirmProjection() {
+  if (!selectedProjection.value) return
+  showProjectionSelect.value = false
+  showConfirm.value = true
+}
 
-  const selectedGeoJsonData = {
-    type: "FeatureCollection",
-    features: selectedPolygons
-  }
-  selectedGeoJson.value = JSON.stringify(selectedGeoJsonData, null, 2)
-
-  worldGlobe.polygonCapColor(feat =>
-    selectedPolygons.includes(feat)
-      ? 'rgba(184, 134, 11, 0.8)'
-      : feat === hoveredPolygon
-        ? 'rgba(255, 255, 255, 0.4)'
-        : 'rgba(70, 130, 180, 0.5)'
-  )
-
+function loadProjection() {
+  showConfirm.value = false
   fetch('http://localhost:5000/api/project', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(selectedGeoJsonData)
+    body: JSON.stringify({ ...selectedGeoJson.value, projection: selectedProjection.value })
   })
     .then(res => res.json())
     .then(data => {
-      console.log('投影结果:', data)
-      renderProjection(data)
+      lastProjection.value = {
+        x_raw: data.x_base,
+        y_raw: data.y_base,
+        x_proj: data.x,
+        y_proj: data.y,
+        area_original: data.area_original,
+        area_projected: data.area_projected
+      }
+      showDialog.value = true
     })
 }
 
-function renderProjection(data) {
+function deepFlatten(arr) {
+  if (!Array.isArray(arr)) return []
+  return arr.flat(Infinity)
+}
+
+function drawAfterDialogOpen() {
   const canvas = projectionCanvas.value
   const ctx = canvas.getContext('2d')
   ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-  ctx.fillStyle = 'rgba(184, 134, 11, 0.5)'
-  ctx.beginPath()
+  if (!lastProjection.value || !lastProjection.value.x_proj || !lastProjection.value.x_raw) return
 
-  const x = data.x
-  const y = data.y
+  const xBase = deepFlatten(lastProjection.value.x_proj)
+  const yBase = deepFlatten(lastProjection.value.y_proj)
+  const xProj = deepFlatten(lastProjection.value.x_raw)
+  const yProj = deepFlatten(lastProjection.value.y_raw)
 
-  if (x.length > 0) {
-    ctx.moveTo(x[0] * 3, y[0] * 3)
+  const baseCenterX = (Math.min(...xBase) + Math.max(...xBase)) / 2
+  const baseCenterY = (Math.min(...yBase) + Math.max(...yBase)) / 2
+
+  const projCenterX = (Math.min(...xProj) + Math.max(...xProj)) / 2
+  const projCenterY = (Math.min(...yProj) + Math.max(...yProj)) / 2
+
+  const scaleRatio = Math.sqrt(lastProjection.value.area_projected / lastProjection.value.area_original)
+  const xProjAligned = xProj.map(x => (x - projCenterX) * scaleRatio + baseCenterX)
+  const yProjAligned = yProj.map(y => (y - projCenterY) * scaleRatio + baseCenterY)
+
+  const allX = [...xBase, ...xProjAligned]
+  const allY = [...yBase, ...yProjAligned]
+  const padding = 30
+  const scaleX = (canvas.width - 2 * padding) / (Math.max(...allX) - Math.min(...allX))
+  const scaleY = (canvas.height - 2 * padding) / (Math.max(...allY) - Math.min(...allY))
+  const scale = Math.min(scaleX, scaleY)
+
+  const offsetX = canvas.width / 2 - baseCenterX * scale
+  const offsetY = canvas.height / 2 + baseCenterY * scale
+
+  const draw = (x, y, stroke, fill, color) => {
+    if (x.length < 3) return
+    ctx.beginPath()
+    ctx.moveTo(x[0] * scale + offsetX, -y[0] * scale + offsetY)
     for (let i = 1; i < x.length; i++) {
-      ctx.lineTo(x[i] * 3, y[i] * 3)
+      ctx.lineTo(x[i] * scale + offsetX, -y[i] * scale + offsetY)
     }
     ctx.closePath()
-    ctx.fill()
+    ctx.fillStyle = fill
+    ctx.strokeStyle = color
+    ctx.lineWidth = 1.5
+    if (fill !== 'transparent') ctx.fill()
+    if (stroke) ctx.stroke()
   }
+
+  draw(xBase, yBase, true, 'transparent', 'red')
+  draw(xProjAligned, yProjAligned, true, 'rgba(184,134,11,0.5)', '#444')
+
+  areaOriginal.value = Math.round(lastProjection.value.area_original)
+  areaProjected.value = Math.round(lastProjection.value.area_projected)
+  areaScale.value = (lastProjection.value.area_projected / lastProjection.value.area_original).toFixed(2)
 }
 </script>
 
@@ -135,246 +218,19 @@ function renderProjection(data) {
 #globeViz {
   width: 100vw;
   height: 100vh;
-  background-color: #121212;
-}
-
-#selectionInfo {
-  position: absolute;
-  top: 20px;
-  left: 20px;
-  background: rgba(0, 0, 0, 0.7);
-  color: #ffd700;
-  padding: 10px 15px;
-  border-radius: 6px;
-  font-family: 'Segoe UI', sans-serif;
-  font-size: 14px;
-  z-index: 100;
-  box-shadow: 0 0 5px rgba(184, 134, 11, 0.5);
-  transition: opacity 0.3s ease;
-  max-width: 1200px;
-  white-space: pre-wrap;
-  word-wrap: break-word;
+  background-color: #111;
 }
 
 #hoverTooltip {
   position: absolute;
-  top: 20px;
-  right: 20px;
-  background: rgba(0, 0, 0, 0.7);
+  top: 10px;
+  right: 10px;
   color: #ffd700;
-  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.7);
+  padding: 6px 10px;
   border-radius: 6px;
-  font-family: 'Segoe UI', sans-serif;
   font-size: 14px;
-  z-index: 110;
-  box-shadow: 0 0 5px rgba(184, 134, 11, 0.5);
-  transition: opacity 0.3s ease;
-}
-
-#projectionCanvas {
-  position: absolute;
-  bottom: 20px;
-  right: 20px;
-  width: 300px;
-  height: 200px;
-  border: 1px solid #b8860b;
-  background-color: #1e1e1e;
-  border-radius: 8px;
-  box-shadow: 0 0 8px rgba(0, 0, 0, 0.6);
+  z-index: 100;
+  font-family: 'Segoe UI', sans-serif;
 }
 </style>
-
-
-<!--<template>-->
-<!--  <div id="app">-->
-<!--    <div ref="globeViz" id="globeViz"></div>-->
-<!--    &lt;!&ndash; 选择信息：显示当前选中国家的 GeoJSON 数据 &ndash;&gt;-->
-<!--    <div id="selectionInfo">{{ selectedGeoJson }}</div>-->
-<!--    &lt;!&ndash; 自定义 tooltip：鼠标悬停时显示当前国家名称 &ndash;&gt;-->
-<!--    <div id="hoverTooltip" v-if="hoveredName">{{ hoveredName }}</div>-->
-<!--    <canvas ref="projectionCanvas" id="projectionCanvas"></canvas>-->
-<!--  </div>-->
-<!--</template>-->
-
-<!--<script setup>-->
-<!--import { onMounted, ref } from 'vue'-->
-<!--import Globe from 'globe.gl'-->
-
-<!--const globeViz = ref(null)-->
-<!--const projectionCanvas = ref(null)-->
-<!--const selectedGeoJson = ref('') // 这里用于保存当前选中国家的 GeoJSON 数据-->
-<!--const hoveredName = ref('')-->
-
-<!--let selectedPolygons = []-->
-<!--let hoveredPolygon = null-->
-<!--let worldGlobe = null-->
-<!--let countries = []-->
-
-<!--// 黑名单国家，过滤掉那些尺寸过小容易误触的国家-->
-<!--const blacklistedCountries = [-->
-<!--  'Bermuda', 'Malta', 'Vatican', 'San Marino', 'Liechtenstein', 'Monaco', 'Andorra',-->
-<!--  'Tuvalu', 'Nauru', 'Palau', 'Marshall Islands', 'Micronesia', 'Saint Kitts and Nevis',-->
-<!--  'Grenada', 'Seychelles', 'Maldives', 'Barbados', 'Antigua and Barbuda'-->
-<!--]-->
-
-<!--onMounted(async () => {-->
-<!--  // 获取 GeoJSON 数据-->
-<!--  const res = await fetch('https://raw.githubusercontent.com/johan/world.geo.json/master/countries.geo.json')-->
-<!--  const geojson = await res.json()-->
-
-<!--  // 过滤掉黑名单中的国家-->
-<!--  geojson.features = geojson.features.filter(-->
-<!--    f => !blacklistedCountries.includes(f.properties.name)-->
-<!--  )-->
-
-<!--  // 将所有 "Taiwan" 改名为 "China"，但不合并 geometry，保留各自边界-->
-<!--  geojson.features.forEach(f => {-->
-<!--    if (f.properties.name === 'Taiwan') {-->
-<!--      f.properties.name = 'China'-->
-<!--    }-->
-<!--  })-->
-
-<!--  countries = geojson.features-->
-
-<!--  worldGlobe = Globe()-->
-<!--    .globeImageUrl('//unpkg.com/three-globe/example/img/earth-dark.jpg')-->
-<!--    .polygonsData(countries)-->
-<!--    .polygonAltitude(0.005)-->
-<!--    .polygonCapColor(feat =>-->
-<!--      selectedPolygons.includes(feat)-->
-<!--        ? 'rgba(184, 134, 11, 0.8)'   // 选中区域暗金色-->
-<!--        : feat === hoveredPolygon-->
-<!--          ? 'rgba(255, 255, 255, 0.4)'-->
-<!--          : 'rgba(70, 130, 180, 0.5)'-->
-<!--    )-->
-<!--    .polygonSideColor(() => 'rgba(255, 255, 255, 0.1)')-->
-<!--    .polygonStrokeColor(feat =>-->
-<!--      feat.properties.name === 'China' ? '#b8860b' : '#ddd'-->
-<!--    )-->
-<!--    .polygonLabel(() => '')-->
-<!--    .onPolygonClick(handlePolygonClick)-->
-<!--    .onPolygonHover(feat => {-->
-<!--      hoveredPolygon = feat-->
-<!--      hoveredName.value = feat && feat.properties && feat.properties.name ? feat.properties.name : ''-->
-<!--      worldGlobe.polygonCapColor(feat =>-->
-<!--        selectedPolygons.includes(feat)-->
-<!--          ? 'rgba(184, 134, 11, 0.8)'-->
-<!--          : feat === hoveredPolygon-->
-<!--            ? 'rgba(255, 255, 255, 0.4)'-->
-<!--            : 'rgba(70, 130, 180, 0.5)'-->
-<!--      )-->
-<!--    })-->
-
-<!--  worldGlobe(globeViz.value)-->
-<!--})-->
-
-<!--function handlePolygonClick(clickedPolygon) {-->
-<!--  if (!clickedPolygon || !clickedPolygon.geometry) return-->
-
-<!--  const countryName = clickedPolygon.properties.name-->
-<!--  // 根据名称筛选所有同名区域（即“中国大陆”与“台湾”均会被选中）-->
-<!--  selectedPolygons = countries.filter(f => f.properties.name === countryName)-->
-
-<!--  // 更新左侧的选中国家信息（GeoJSON）-->
-<!--  const selectedGeoJsonData = {-->
-<!--    type: "FeatureCollection",-->
-<!--    features: selectedPolygons-->
-<!--  }-->
-<!--  selectedGeoJson.value = JSON.stringify(selectedGeoJsonData, null, 2)-->
-
-<!--  worldGlobe.polygonCapColor(feat =>-->
-<!--    selectedPolygons.includes(feat)-->
-<!--      ? 'rgba(184, 134, 11, 0.8)' // 选中区域暗金色-->
-<!--      : feat === hoveredPolygon-->
-<!--        ? 'rgba(255, 255, 255, 0.4)'-->
-<!--        : 'rgba(70, 130, 180, 0.5)'-->
-<!--  )-->
-
-<!--  // 收集所有选中区域的坐标数据-->
-<!--  const combinedCoords = selectedPolygons.flatMap(f => f.geometry.coordinates)-->
-
-<!--  // 请求后端投影数据-->
-<!--  fetch('/api/project', {-->
-<!--    method: 'POST',-->
-<!--    headers: { 'Content-Type': 'application/json' },-->
-<!--    body: JSON.stringify({-->
-<!--      region_name: countryName,-->
-<!--      coordinates: combinedCoords,-->
-<!--      projection: 'mercator'-->
-<!--    })-->
-<!--  })-->
-<!--    .then(res => res.json())-->
-<!--    .then(data => {-->
-<!--      console.log('投影结果:', data)-->
-<!--      renderProjection(data)-->
-<!--    })-->
-<!--}-->
-
-<!--function renderProjection(data) {-->
-<!--  const canvas = projectionCanvas.value-->
-<!--  const ctx = canvas.getContext('2d')-->
-<!--  ctx.clearRect(0, 0, canvas.width, canvas.height)-->
-
-<!--  ctx.fillStyle = 'rgba(184, 134, 11, 0.5)'  // 暗金色半透明-->
-<!--  ctx.beginPath()-->
-<!--  // 在这里根据 data 的坐标进行绘制（示例）-->
-<!--  ctx.fill()-->
-<!--}-->
-<!--</script>-->
-
-<!--<style>-->
-<!--/* Globe 显示 */-->
-<!--#globeViz {-->
-<!--  width: 100vw;-->
-<!--  height: 100vh;-->
-<!--  background-color: #121212;-->
-<!--}-->
-
-<!--/* 选择信息：显示当前选中国家的 GeoJSON 数据 */-->
-<!--#selectionInfo {-->
-<!--  position: absolute;-->
-<!--  top: 20px;-->
-<!--  left: 20px;-->
-<!--  background: rgba(0, 0, 0, 0.7);-->
-<!--  color: #ffd700;-->
-<!--  padding: 10px 15px;-->
-<!--  border-radius: 6px;-->
-<!--  font-family: 'Segoe UI', sans-serif;-->
-<!--  font-size: 14px;-->
-<!--  z-index: 100;-->
-<!--  box-shadow: 0 0 5px rgba(184, 134, 11, 0.5);-->
-<!--  transition: opacity 0.3s ease;-->
-<!--  max-width: 1200px; /* 修改为原来的三倍宽度 */-->
-<!--  white-space: pre-wrap; /* 保持格式化 */-->
-<!--  word-wrap: break-word; /* 自动换行 */-->
-<!--}-->
-
-<!--/* 自定义悬停 tooltip：显示当前鼠标悬停的国家名称 */-->
-<!--#hoverTooltip {-->
-<!--  position: absolute;-->
-<!--  top: 20px;-->
-<!--  right: 20px;-->
-<!--  background: rgba(0, 0, 0, 0.7);-->
-<!--  color: #ffd700;-->
-<!--  padding: 8px 12px;-->
-<!--  border-radius: 6px;-->
-<!--  font-family: 'Segoe UI', sans-serif;-->
-<!--  font-size: 14px;-->
-<!--  z-index: 110;-->
-<!--  box-shadow: 0 0 5px rgba(184, 134, 11, 0.5);-->
-<!--  transition: opacity 0.3s ease;-->
-<!--}-->
-
-<!--/* 投影 Canvas 优化 */-->
-<!--#projectionCanvas {-->
-<!--  position: absolute;-->
-<!--  bottom: 20px;-->
-<!--  right: 20px;-->
-<!--  width: 300px;-->
-<!--  height: 200px;-->
-<!--  border: 1px solid #b8860b;-->
-<!--  background-color: #1e1e1e;-->
-<!--  border-radius: 8px;-->
-<!--  box-shadow: 0 0 8px rgba(0, 0, 0, 0.6);-->
-<!--}-->
-<!--</style>-->
