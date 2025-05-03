@@ -4,7 +4,6 @@ channels:
   - https://repo.anaconda.com/pkgs/main
   - https://repo.anaconda.com/pkgs/r
   - https://repo.anaconda.com/pkgs/msys2
-
 dependencies:
   - blas=1.0=mkl
   - blinker=1.9.0=py312haa95532_0
