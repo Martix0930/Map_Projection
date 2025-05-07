@@ -214,7 +214,6 @@ function loadProjection() {
     })
 }
 
-
 function drawAfterDialogOpen() {
   const canvas = projectionCanvas.value
   const ctx = canvas.getContext('2d')
