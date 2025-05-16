@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "element-plus": "^2.9.8",
+    "topojson-client": "^3.1.0"
+  }
+}
